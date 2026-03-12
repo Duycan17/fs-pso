@@ -5,7 +5,7 @@ from pandas.api.types import is_numeric_dtype
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import StratifiedKFold, cross_val_score
 from mealpy import FloatVar
-from mealpy.swarm_based import PSO
+from mealpy.swarm_based import WOA
 
 
 def load_dataset(csv_path: str = "class.csv"):
@@ -28,7 +28,7 @@ def load_dataset(csv_path: str = "class.csv"):
     return X, y
 
 
-def build_pso_objective(X, y, best_f1_by_k: dict):
+def build_woa_objective(X, y, best_f1_by_k: dict):
     skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
     clf = RandomForestClassifier(n_estimators=100, random_state=42, n_jobs=-1)
 
@@ -55,43 +55,43 @@ def build_pso_objective(X, y, best_f1_by_k: dict):
         if f1 > global_best["f1"]:
             global_best["f1"] = f1
             global_best["k"] = k
-            print(f"[PSO-FS] eval={eval_counter['n']:4d}  NEW global best F1={f1:.4f} with k={k}")
+            print(f"[WOA-FS] eval={eval_counter['n']:4d}  NEW global best F1={f1:.4f} with k={k}")
         elif eval_counter["n"] % 20 == 0:
-            print(f"[PSO-FS] eval={eval_counter['n']:4d}  F1={f1:.4f} with k={k}")
+            print(f"[WOA-FS] eval={eval_counter['n']:4d}  F1={f1:.4f} with k={k}")
 
         return 1.0 - f1
 
     return objective
 
 
-def run_pso_feature_selection(X, y, epoch: int = 20, pop_size: int = 20, verbose: bool = True):
+def run_woa_feature_selection(X, y, epoch: int = 20, pop_size: int = 20, verbose: bool = True):
     n_features = X.shape[1]
     best_f1_by_k: dict[int, float] = {}
-    obj_func = build_pso_objective(X, y, best_f1_by_k)
+    obj_func = build_woa_objective(X, y, best_f1_by_k)
 
     bounds = FloatVar(lb=(0.0,) * n_features, ub=(1.0,) * n_features, name="w")
     problem = {
         "bounds": bounds,
         "obj_func": obj_func,
         "minmax": "min",
-        "name": "PSO Feature Selection (F1)",
+        "name": "WOA Feature Selection (F1)",
         "log_to": None,
     }
 
-    print(f"[PSO-FS] Starting PSO: n_features={n_features}, epoch={epoch}, pop_size={pop_size}")
-    model = PSO.OriginalPSO(epoch=epoch, pop_size=pop_size, verbose=verbose)
+    print(f"[WOA-FS] Starting WOA: n_features={n_features}, epoch={epoch}, pop_size={pop_size}")
+    model = WOA.OriginalWOA(epoch=epoch, pop_size=pop_size, verbose=verbose)
     model.solve(problem)
 
-    print("[PSO-FS] Finished PSO. Best F1 by feature count (k):")
+    print("[WOA-FS] Finished WOA. Best F1 by feature count (k):")
     for k in sorted(best_f1_by_k.keys()):
         print(f"  k={k:3d} -> F1={best_f1_by_k[k]:.4f}")
 
     return best_f1_by_k
 
 
-def plot_pso_feature_selection_convergence(output_path: str = "pso_feature_selection_convergence.png"):
+def plot_woa_feature_selection_convergence(output_path: str = "pso_feature_selection_convergence.png"):
     X, y = load_dataset("class.csv")
-    best_f1_by_k = run_pso_feature_selection(X, y, epoch=20, pop_size=20, verbose=True)
+    best_f1_by_k = run_woa_feature_selection(X, y, epoch=20, pop_size=20, verbose=True)
 
     feature_counts = np.array(sorted(best_f1_by_k.keys()))
     f1_scores = np.array([best_f1_by_k[k] for k in feature_counts])
@@ -139,4 +139,4 @@ def plot_pso_feature_selection_convergence(output_path: str = "pso_feature_selec
 
 
 if __name__ == "__main__":
-    plot_pso_feature_selection_convergence()
+    plot_woa_feature_selection_convergence()
