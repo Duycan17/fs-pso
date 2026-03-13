@@ -3,9 +3,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from pandas.api.types import is_numeric_dtype
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.model_selection import StratifiedKFold, cross_val_score
-from mealpy import FloatVar
-from mealpy.swarm_based import WOA
+from mafese import Data, MhaSelector
 
 
 def load_dataset(csv_path: str = "class.csv"):
@@ -25,73 +23,47 @@ def load_dataset(csv_path: str = "class.csv"):
     X = np.column_stack(X_encoded)
     y_raw = df["Number of Bugs"].values
     y = (y_raw > 0).astype(int)
-    return X, y
+    return X, y, feature_cols
 
 
-def build_woa_objective(X, y, best_f1_by_k: dict):
-    skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
-    clf = RandomForestClassifier(n_estimators=100, random_state=42, n_jobs=-1)
+def run_mafese_mha_feature_selection(X, y, epoch: int = 20, pop_size: int = 20, verbose: bool = True):
+    data = Data(X, y)
+    data.split_train_test(test_size=0.2, random_state=42)
 
-    # These dicts are mutated inside the closure for simple stateful logging
-    eval_counter = {"n": 0}
-    global_best = {"f1": -1.0, "k": None}
+    optimizer_paras = {"epoch": epoch, "pop_size": pop_size}
+    selector = MhaSelector(
+        problem="classification",
+        obj_name=None,
+        estimator="rf",
+        estimator_paras={"n_estimators": 100, "random_state": 42, "n_jobs": -1},
+        optimizer="OriginalWOA",
+        optimizer_paras=optimizer_paras,
+        mode="single",
+        n_workers=None,
+        termination=None,
+        seed=42,
+        verbose=verbose,
+    )
 
-    def objective(solution):
-        sol = np.asarray(solution)
-        mask = sol > 0.5
-        if not np.any(mask):
-            mask[np.argmax(sol)] = True
+    selector.fit(data.X_train, data.y_train)
 
-        X_sel = X[:, mask]
-        scores = cross_val_score(clf, X_sel, y, cv=skf, scoring="f1")
-        f1 = float(scores.mean())
+    indexes = np.asarray(selector.selected_feature_indexes, dtype=int)
+    if indexes.size == 0:
+        raise RuntimeError("MAFESE did not select any features.")
 
-        k = X_sel.shape[1]
-        prev = best_f1_by_k.get(k)
-        if prev is None or f1 > prev:
-            best_f1_by_k[k] = f1
+    best_info = selector.get_best_information()
+    k = int(best_info.get("n_columns", indexes.size))
+    f1 = float(best_info.get("fit", 0.0))
 
-        eval_counter["n"] += 1
-        if f1 > global_best["f1"]:
-            global_best["f1"] = f1
-            global_best["k"] = k
-            print(f"[WOA-FS] eval={eval_counter['n']:4d}  NEW global best F1={f1:.4f} with k={k}")
-        elif eval_counter["n"] % 20 == 0:
-            print(f"[WOA-FS] eval={eval_counter['n']:4d}  F1={f1:.4f} with k={k}")
-
-        return 1.0 - f1
-
-    return objective
+    best_f1_by_k: dict[int, float] = {k: f1}
+    return best_f1_by_k, indexes
 
 
-def run_woa_feature_selection(X, y, epoch: int = 20, pop_size: int = 20, verbose: bool = True):
-    n_features = X.shape[1]
-    best_f1_by_k: dict[int, float] = {}
-    obj_func = build_woa_objective(X, y, best_f1_by_k)
-
-    bounds = FloatVar(lb=(0.0,) * n_features, ub=(1.0,) * n_features, name="w")
-    problem = {
-        "bounds": bounds,
-        "obj_func": obj_func,
-        "minmax": "min",
-        "name": "WOA Feature Selection (F1)",
-        "log_to": None,
-    }
-
-    print(f"[WOA-FS] Starting WOA: n_features={n_features}, epoch={epoch}, pop_size={pop_size}")
-    model = WOA.OriginalWOA(epoch=epoch, pop_size=pop_size, verbose=verbose)
-    model.solve(problem)
-
-    print("[WOA-FS] Finished WOA. Best F1 by feature count (k):")
-    for k in sorted(best_f1_by_k.keys()):
-        print(f"  k={k:3d} -> F1={best_f1_by_k[k]:.4f}")
-
-    return best_f1_by_k
-
-
-def plot_woa_feature_selection_convergence(output_path: str = "pso_feature_selection_convergence.png"):
-    X, y = load_dataset("class.csv")
-    best_f1_by_k = run_woa_feature_selection(X, y, epoch=20, pop_size=20, verbose=True)
+def plot_mafese_feature_selection_convergence(output_path: str = "pso_feature_selection_convergence.png"):
+    X, y, feature_names = load_dataset("class.csv")
+    best_f1_by_k, selected_indexes = run_mafese_mha_feature_selection(
+        X, y, epoch=20, pop_size=20, verbose=True
+    )
 
     feature_counts = np.array(sorted(best_f1_by_k.keys()))
     f1_scores = np.array([best_f1_by_k[k] for k in feature_counts])
@@ -100,6 +72,7 @@ def plot_woa_feature_selection_convergence(output_path: str = "pso_feature_selec
     convergence_features = int(feature_counts[best_idx])
     convergence_f1 = float(f1_scores[best_idx])
 
+    # Figure 1: convergence curve (kept from previous version)
     plt.figure(figsize=(8, 5))
     plt.plot(feature_counts, f1_scores, marker="o", linewidth=2, label="F1 score")
 
@@ -129,7 +102,7 @@ def plot_woa_feature_selection_convergence(output_path: str = "pso_feature_selec
 
     plt.xlabel("Số lượng features được chọn (Number of features)")
     plt.ylabel("F1 score")
-    plt.title("Hội tụ Feature Selection dùng PSO + Mealpy\n(PSO Feature Selection Convergence)")
+    plt.title("Hội tụ Feature Selection dùng MAFESE (MHA)\n(MAFESE Feature Selection Convergence)")
     plt.grid(True, linestyle="--", alpha=0.3)
     plt.legend()
     plt.tight_layout()
@@ -137,6 +110,32 @@ def plot_woa_feature_selection_convergence(output_path: str = "pso_feature_selec
     plt.savefig(output_path, dpi=200)
     plt.close()
 
+    # Figure 2: top-15 feature importances for selected features
+    rf = RandomForestClassifier(n_estimators=200, random_state=42, n_jobs=-1)
+    X_sel = X[:, selected_indexes]
+    rf.fit(X_sel, y)
+
+    importances = rf.feature_importances_
+    feat_names_sel = np.array([feature_names[i] for i in selected_indexes])
+
+    order = np.argsort(importances)[::-1]
+    top_k = min(15, order.size)
+    order = order[:top_k]
+
+    top_importances = importances[order]
+    top_names = feat_names_sel[order]
+
+    plt.figure(figsize=(8, 5))
+    y_pos = np.arange(top_k)
+    # Reverse so the most important feature is at the top
+    plt.barh(y_pos, top_importances[::-1])
+    plt.yticks(y_pos, top_names[::-1])
+    plt.xlabel("Importance")
+    plt.title("Top 15 Feature Importances - Random Forest")
+    plt.tight_layout()
+    plt.savefig("top15_feature_importances.png", dpi=200)
+    plt.close()
+
 
 if __name__ == "__main__":
-    plot_woa_feature_selection_convergence()
+    plot_mafese_feature_selection_convergence()
